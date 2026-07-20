@@ -93,11 +93,17 @@ function App() {
   }
 
   function handleFileChange(e) {
-    const selected = Array.from(e.target.files).slice(0, 3);
-    // Release any previews from a prior selection before replacing them.
-    previews.forEach((src) => URL.revokeObjectURL(src));
-    setFiles(selected);
-    setPreviews(selected.map((f) => URL.createObjectURL(f)));
+    const incoming = Array.from(e.target.files);
+    e.target.value = ""; // otherwise re-selecting the same file won't re-fire onChange
+
+    if (incoming.length === 0) return;
+
+    const room = 3 - files.length;
+    if (room <= 0) return; // already at the 3-photo limit
+
+    const toAdd = incoming.slice(0, room);
+    setFiles((prev) => [...prev, ...toAdd]);
+    setPreviews((prev) => [...prev, ...toAdd.map((f) => URL.createObjectURL(f))]);
   }
 
   function removeFile(index) {
@@ -375,20 +381,30 @@ function App() {
             </p>
           </div>
 
-          <label className="dropzone">
-            <i className="ti ti-camera" aria-hidden="true"></i>
-            <p className="dropzone-title">
-              Drop a photo of your fridge or pantry
-            </p>
-            <p className="dropzone-sub">or tap to upload, up to 3 photos</p>
-            <input
-              type="file"
-              accept="image/*"
-              multiple
-              onChange={handleFileChange}
-              hidden
-            />
-          </label>
+          {files.length < 3 ? (
+            <label className="dropzone">
+              <i className="ti ti-camera" aria-hidden="true"></i>
+              <p className="dropzone-title">
+                Drop a photo of your fridge or pantry
+              </p>
+              <p className="dropzone-sub">
+                or tap to upload — {3 - files.length} more photo
+                {3 - files.length === 1 ? "" : "s"} allowed
+              </p>
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                onChange={handleFileChange}
+                hidden
+              />
+            </label>
+          ) : (
+            <div className="dropzone dropzone-full">
+              <p className="dropzone-title">3 of 3 photos added</p>
+              <p className="dropzone-sub">Remove one below to add another</p>
+            </div>
+          )}
 
           {previews.length > 0 && (
             <div className="preview-row">
