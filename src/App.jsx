@@ -31,6 +31,7 @@ function App() {
   const [crops, setCrops] = useState({});
   const [editingIndex, setEditingIndex] = useState(null);
   const [expandedCrop, setExpandedCrop] = useState(null);
+  const [newItemName, setNewItemName] = useState("");
 
   const [recipes, setRecipes] = useState([]);
   const [error, setError] = useState("");
@@ -123,6 +124,23 @@ function App() {
     setEditingIndex(null);
   }
 
+  function addManualItem() {
+    const trimmed = newItemName.trim();
+    if (!trimmed) return;
+    setItems((prev) => [
+      ...prev,
+      {
+        name: trimmed,
+        quantity: "1",
+        likely_shelf_life_days: 7,
+        confidence: "high",
+        edited: true,
+        manual: true,
+      },
+    ]);
+    setNewItemName("");
+  }
+
   function reset() {
     setFiles([]);
     setPreviews([]);
@@ -130,6 +148,7 @@ function App() {
     setCrops({});
     setRecipes([]);
     setError("");
+    setNewItemName("");
     setStage(STAGE.UPLOAD);
   }
 
@@ -257,6 +276,10 @@ function App() {
         stage === STAGE.GENERATING ||
         stage === STAGE.RESULTS) && (
         <section className="card">
+          <button className="ghost-btn back-btn" onClick={reset}>
+            ← Back to photos
+          </button>
+
           <h2>Here's what's on hand</h2>
 
           <ul className="item-list">
@@ -292,6 +315,28 @@ function App() {
               );
             })}
           </ul>
+
+          {stage === STAGE.DETECTED && (
+            <div className="add-item-row">
+              <input
+                type="text"
+                className="text-input"
+                placeholder="Add something we missed"
+                value={newItemName}
+                onChange={(e) => setNewItemName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") addManualItem();
+                }}
+              />
+              <button
+                className="ghost-btn"
+                onClick={addManualItem}
+                disabled={!newItemName.trim()}
+              >
+                + Add
+              </button>
+            </div>
+          )}
 
           {items.some((i) => i.confidence === "low" && !i.edited) && (
             <p className="confidence-note">
