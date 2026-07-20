@@ -162,7 +162,7 @@ function mergeDuplicateItems(items) {
 }
 
 // Step 2: ingredient list (+ leftovers habit, allergies) -> recipes
-export async function suggestRecipes(items, { eatsLeftovers, allergies } = {}) {
+export async function suggestRecipes(items, { eatsLeftovers, allergies, servings } = {}) {
   const itemList = items
     .filter((i) => !NON_FOOD_ITEMS.includes(i.name.toLowerCase()))
     .map((i) => `${i.name} (${i.quantity})`)
@@ -176,6 +176,8 @@ export async function suggestRecipes(items, { eatsLeftovers, allergies } = {}) {
     ? "This person usually cooks once and eats leftovers for a few days, so mention roughly how many days a recipe's portions could stretch."
     : "This person usually cooks fresh each time, so no need to mention leftover stretch.";
 
+const servingsLine = `This recipe should serve about ${servings || 2} people — scale ingredient quantities and portions accordingly.`;
+
   const prompt = `Here's what's currently in someone's fridge/pantry: ${itemList}.
 
 This person tends to assume they don't have enough at home to cook a real meal,
@@ -187,11 +189,18 @@ cost estimate in dollars for just those missing ingredients (estimated_missing_c
 a number, omit or use 0 if nothing is missing). Keep missing ingredients minimal
 and realistic — don't invent obscure needs.
 
+Also provide clear step-by-step cooking instructions as an array of short steps
+(steps), each one a single actionable sentence, in the order they should be
+done. Keep it to 4-7 steps, practical and specific (include rough times/temps
+where relevant, e.g. "Bake at 400F for 20 minutes").
+
 ${leftoverLine}
 ${allergyLine}
+${servingsLine}
 
-Write the recipe descriptions in a casual, friendly, reassuring tone, like a
-mate pointing out "you've actually already got this" — not a formal recipe card.
+Write the blurb in a casual, friendly, reassuring tone, like a mate pointing
+out "you've actually already got this" — not a formal recipe card. The steps
+themselves should be clear and instructional, not casual.
 Do not use em dashes in any text field.
 
 Respond ONLY with valid JSON, no markdown fences, no preamble, in this exact shape:
@@ -202,7 +211,14 @@ Respond ONLY with valid JSON, no markdown fences, no preamble, in this exact sha
       "blurb": "You've basically got a stir fry sitting in your fridge already.",
       "uses_existing": ["capsicum", "eggs"],
       "missing": ["soy sauce"],
-      "estimated_missing_cost": 3.5
+      "estimated_missing_cost": 3.5,
+      "steps": [
+        "Heat oil in a large pan over medium-high heat.",
+        "Add capsicum and stir fry for 3-4 minutes until slightly softened.",
+        "Push veggies aside, crack eggs into the pan and scramble.",
+        "Mix everything together, add soy sauce, and stir fry 2 more minutes.",
+        "Serve hot."
+      ]
     }
   ]
 }`;

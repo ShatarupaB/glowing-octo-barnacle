@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   detectIngredients,
   suggestRecipes,
@@ -20,11 +20,13 @@ const STAGE = {
 
 const SOON_THRESHOLD_DAYS = 5;
 
+const LOADING_EMOJIS = ["🍇", "🥕", "🧀", "🍎", "🍲","🥘","🍔","🍕","🍤","🍝","🥞", "🍞"];
+
 function App() {
   const [stage, setStage] = useState(STAGE.ONBOARDING);
   const [eatsLeftovers, setEatsLeftovers] = useState(null);
   const [allergies, setAllergies] = useState("");
-
+  const [servings, setServings] = useState(2);
   const [files, setFiles] = useState([]);
   const [previews, setPreviews] = useState([]);
   const [items, setItems] = useState([]);
@@ -32,9 +34,18 @@ function App() {
   const [editingIndex, setEditingIndex] = useState(null);
   const [expandedCrop, setExpandedCrop] = useState(null);
   const [newItemName, setNewItemName] = useState("");
-
+  const [editingQtyIndex, setEditingQtyIndex] = useState(null);
   const [recipes, setRecipes] = useState([]);
   const [error, setError] = useState("");
+  const [emojiIndex, setEmojiIndex] = useState(0);
+
+  useEffect(() => {
+    if (stage !== STAGE.DETECTING) return;
+    const interval = setInterval(() => {
+      setEmojiIndex((i) => (i + 1) % LOADING_EMOJIS.length);
+    }, 500);
+    return () => clearInterval(interval);
+  }, [stage]);
 
   function handleOnboardingContinue() {
     if (eatsLeftovers === null) return;
@@ -105,7 +116,7 @@ function App() {
     setError("");
     setStage(STAGE.GENERATING);
     try {
-      const suggested = await suggestRecipes(items, { eatsLeftovers, allergies });
+      const suggested = await suggestRecipes(items, { eatsLeftovers, allergies, servings });
       setRecipes(suggested);
       setStage(STAGE.RESULTS);
     } catch (err) {
@@ -123,6 +134,13 @@ function App() {
     );
     setEditingIndex(null);
   }
+
+  function updateItemQuantity(index, newQty) {
+  setItems((prev) =>
+    prev.map((item, i) => (i === index ? { ...item, quantity: newQty } : item))
+  );
+  setEditingQtyIndex(null);
+}
 
   function addManualItem() {
     const trimmed = newItemName.trim();
@@ -200,7 +218,25 @@ function App() {
             value={allergies}
             onChange={(e) => setAllergies(e.target.value)}
           />
+
           <p className="hint">Leave blank if none.</p>
+
+          <p className="field-label">How many people are you cooking for?</p>
+          <input
+            type="number"
+            min="1"
+            className="text-input"
+            value={servings}
+            onChange={(e) => {
+              const val = e.target.value;
+              setServings(val === "" ? "" : parseInt(val));
+            }}
+            onBlur={(e) => {
+              const val = parseInt(e.target.value);
+              setServings(!val || val < 1 ? 1 : val);
+            }}
+          />
+         
 
           <button
             disabled={eatsLeftovers === null}
@@ -252,8 +288,12 @@ function App() {
       )}
 
       {stage === STAGE.DETECTING && (
-        <section className="card">
-          <p>Looking through your fridge...</p>
+        
+        <section className="card DETECTING-CARD">
+          <div className="fridge-loading">
+            <span className="cycling-emoji">{LOADING_EMOJIS[emojiIndex]}</span>
+          </div>
+          <p className="loading-text">Looking through your food...</p>
         </section>
       )}
 
@@ -276,8 +316,8 @@ function App() {
         stage === STAGE.GENERATING ||
         stage === STAGE.RESULTS) && (
         <section className="card">
-          <button className="ghost-btn back-btn" onClick={reset}>
-            ← Back to photos
+          <button className="ghost-btn back-btn" onClick={restartFully}>
+            ← Back to home
           </button>
 
           <h2>Here's what's on hand</h2>
@@ -287,8 +327,10 @@ function App() {
               const isSoon = item.likely_shelf_life_days <= SOON_THRESHOLD_DAYS;
               return (
                 <li key={i} className={isSoon ? "urgent" : ""}>
-                  {crops[i] && (
+                  {crops[i] ? (
                     <img src={crops[i]} alt={item.name} className="item-thumb" onClick={() => setExpandedCrop(crops[i])} />
+                  ) : (
+                    <span className="item-thumb-placeholder"></span>
                   )}
 
                   <div className="name-col">
@@ -310,7 +352,19 @@ function App() {
                     <span></span>
                   )}
 
-                  <span className="qty">{item.quantity}</span>
+                  {editingQtyIndex === i ? (
+                    <input
+                      className="edit-input qty-input"
+                      defaultValue={item.quantity}
+                      autoFocus
+                      onBlur={(e) => updateItemQuantity(i, e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
+                    />
+                  ) : (
+                    <span className="qty editable" onClick={() => setEditingQtyIndex(i)}>
+                      {item.quantity}
+                    </span>
+                  )}
                 </li>
               );
             })}
@@ -354,7 +408,12 @@ function App() {
           {stage === STAGE.DETECTED && (
             <button onClick={handleGetRecipes}>Prove I've got enough</button>
           )}
-          {stage === STAGE.GENERATING && <p>Thinking of recipes...</p>}
+          {stage === STAGE.GENERATING && (
+            <div className="loading-row">
+              <span className="spinner"></span>
+              <span>Thinking of recipes...</span>
+            </div>
+          )}
         </section>
       )}
 
@@ -372,7 +431,6 @@ function App() {
             {recipes.map((r, i) => (
               <div key={i} className="recipe-card">
                 <h3>{r.name}</h3>
-                <p className="blurb">{r.blurb}</p>
                 <p className="uses">
                   Uses {r.uses_existing.join(", ")}.
                   {r.missing.length === 0 && " Nothing else needed."}
@@ -388,6 +446,14 @@ function App() {
                         </span>
                       )}
                   </p>
+                )}
+
+                {r.steps && r.steps.length > 0 && (
+                  <ol className="steps-list">
+                    {r.steps.map((step, si) => (
+                      <li key={si}>{step}</li>
+                    ))}
+                  </ol>
                 )}
               </div>
             ))}
