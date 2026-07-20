@@ -48,6 +48,7 @@ export async function detectIngredients(imageFiles) {
   const prompt = `You are looking at ${imageFiles.length} photo(s) of someone's
 fridge and/or pantry, indexed 0 to ${imageFiles.length - 1} in the order given.
 
+
 Identify every distinct food item you can see. For each item give:
 - name (simple, e.g. "milk", "capsicum", "eggs")
 - quantity (rough estimate, e.g. "1 carton", "3", "half full jar")
@@ -60,6 +61,11 @@ Identify every distinct food item you can see. For each item give:
 Include non-food items like water bottles too, but they will be filtered out later.
 If the photo(s) show little to no food, return an empty or near-empty items array —
 do not invent items that aren't there.
+If the same type of item appears more than once (e.g. multiple apples, or the
+same jar in more than one photo), report it ONCE as a single item with a
+combined quantity (e.g. "4" instead of separate "3" and "1" entries). Treat
+singular/plural naming as the same item (e.g. "apple" and "apples" are one
+item, not two).
 
 Respond ONLY with valid JSON, no markdown fences, no preamble, in this exact shape:
 {
@@ -89,7 +95,7 @@ Respond ONLY with valid JSON, no markdown fences, no preamble, in this exact sha
   }
   const text = data.candidates[0].content.parts[0].text;
   const cleaned = text.replace(/```json|```/g, "").trim();
-  return JSON.parse(cleaned).items;
+  return mergeDuplicateItems(JSON.parse(cleaned).items);
 }
 
 // True if the detected items don't add up to anything actually cookable
@@ -116,6 +122,43 @@ export function cropFromBox(img, box2d) {
   const ctx = canvas.getContext("2d");
   ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
   return canvas.toDataURL("image/jpeg", 0.85);
+}
+
+function normalizeName(name) {
+  let n = name.trim().toLowerCase();
+  if (n.endsWith("ies")) n = n.slice(0, -3) + "y";
+  else if (n.endsWith("s") && !n.endsWith("ss")) n = n.slice(0, -1);
+  return n;
+}
+
+function combineQuantities(quantities) {
+  const nums = quantities.map((q) => parseFloat(q));
+  if (nums.every((n) => !isNaN(n))) {
+    return `${nums.reduce((a, b) => a + b, 0)}`;
+  }
+  return quantities.length > 1 ? quantities.join(" + ") : quantities[0];
+}
+
+function mergeDuplicateItems(items) {
+  const groups = new Map();
+  for (const item of items) {
+    const key = normalizeName(item.name);
+    if (!groups.has(key)) {
+      groups.set(key, { ...item, quantities: [item.quantity] });
+    } else {
+      const existing = groups.get(key);
+      existing.quantities.push(item.quantity);
+      if (item.confidence === "low") existing.confidence = "low";
+      existing.likely_shelf_life_days = Math.min(
+        existing.likely_shelf_life_days,
+        item.likely_shelf_life_days
+      );
+    }
+  }
+  return Array.from(groups.values()).map(({ quantities, ...rest }) => ({
+    ...rest,
+    quantity: combineQuantities(quantities),
+  }));
 }
 
 // Step 2: ingredient list (+ leftovers habit, allergies) -> recipes

@@ -90,6 +90,7 @@ function App() {
         return;
       }
       setItems(detected);
+      console.log("Detected items:", detected);
       await computeCrops(detected, previews);
       setStage(STAGE.DETECTED);
     } catch (err) {
@@ -264,46 +265,29 @@ function App() {
               return (
                 <li key={i} className={isSoon ? "urgent" : ""}>
                   {crops[i] && (
-                    <img
-                      src={crops[i]}
-                      alt={item.name}
-                      className="item-thumb"
-                      onClick={() => setExpandedCrop(crops[i])}
-                    />
+                    <img src={crops[i]} alt={item.name} className="item-thumb" onClick={() => setExpandedCrop(crops[i])} />
                   )}
 
-                  {editingIndex === i ? (
-                    <input
-                      className="edit-input"
-                      defaultValue={item.name}
-                      autoFocus
-                      onBlur={(e) => updateItemName(i, e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") e.target.blur();
-                      }}
-                    />
-                  ) : (
-                    <span
-                      onClick={() => setEditingIndex(i)}
-                      className={
-                        item.confidence === "low" && !item.edited
-                          ? "unsure"
-                          : "editable"
-                      }
-                    >
-                      {item.name}
-                      {item.confidence === "low" && !item.edited && " *"}
-                    </span>
-                  )}
+                  <div className="name-col">
+                    {editingIndex === i ? (
+                      <input className="edit-input" defaultValue={item.name} autoFocus
+                        onBlur={(e) => updateItemName(i, e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }} />
+                    ) : (
+                      <span onClick={() => setEditingIndex(i)}
+                        className={item.confidence === "low" && !item.edited ? "unsure" : "editable"}>
+                        {item.name}{item.confidence === "low" && !item.edited && " *"}
+                      </span>
+                    )}
+                  </div>
 
                   {isSoon ? (
-                    <>
-                      <i className="ti ti-clock" aria-hidden="true"></i>
-                      <span className="badge">use soon</span>
-                    </>
+                    <span className="badge"><i className="ti ti-clock" aria-hidden="true"></i> use soon</span>
                   ) : (
-                    <span className="qty">{item.quantity}</span>
+                    <span></span>
                   )}
+
+                  <span className="qty">{item.quantity}</span>
                 </li>
               );
             })}
