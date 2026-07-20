@@ -34,6 +34,21 @@ async function fetchWithTimeout(url, options, timeoutMs = 30000) {
 // Non-food items that should never count toward "you've got enough".
 const NON_FOOD_ITEMS = ["water", "ice"];
 
+// Gemini is asked for a single integer, but sometimes hedges with a range
+// like "5-7" or "5 to 7 days". Rather than let that silently break every
+// downstream comparison (a string like "5-7" is NaN when compared
+// numerically, so it would just never trigger a badge), pull the first
+// number out and use it. We take the lower/more cautious bound on purpose:
+// better to flag something as perishable a bit early than miss it.
+function normalizeShelfLifeDays(value) {
+  if (typeof value === "number" && !isNaN(value)) return value;
+  if (typeof value === "string") {
+    const match = value.match(/\d+(\.\d+)?/);
+    if (match) return parseFloat(match[0]);
+  }
+  return 14; // unparseable estimate -> assume shelf-stable rather than hide it entirely
+}
+
 // Step 1: photo(s) -> structured ingredient list with boxes + confidence
 export async function detectIngredients(imageFiles) {
   const imageParts = await Promise.all(
@@ -53,7 +68,9 @@ Identify every distinct food item you can see. For each item give:
 - name (simple, e.g. "milk", "capsicum", "eggs")
 - quantity (rough estimate, e.g. "1 carton", "3", "half full jar")
 - category ("fridge" or "pantry")
-- likely_shelf_life_days (a reasonable estimate for this type of item)
+- likely_shelf_life_days (a single whole number estimate of how many days this
+  item will stay good from today. Always a plain integer, e.g. 5, never a
+  range like "5-7" and never a string.)
 - confidence ("high" or "low" — use "low" if you're genuinely unsure what the item is)
 - image_index (which photo, 0-based, this item was seen in)
 - box_2d: [ymin, xmin, ymax, xmax] normalized 0-1000, tightly bounding just this item
@@ -95,7 +112,11 @@ Respond ONLY with valid JSON, no markdown fences, no preamble, in this exact sha
   }
   const text = data.candidates[0].content.parts[0].text;
   const cleaned = text.replace(/```json|```/g, "").trim();
-  return mergeDuplicateItems(JSON.parse(cleaned).items);
+  const parsed = JSON.parse(cleaned).items.map((item) => ({
+    ...item,
+    likely_shelf_life_days: normalizeShelfLifeDays(item.likely_shelf_life_days),
+  }));
+  return mergeDuplicateItems(parsed);
 }
 
 // True if the detected items don't add up to anything actually cookable
@@ -159,6 +180,51 @@ function mergeDuplicateItems(items) {
     ...rest,
     quantity: combineQuantities(quantities),
   }));
+}
+
+// Manually-added items skip the photo step entirely, so there's nothing to
+// estimate shelf life from except the name. Ask Gemini the same question it
+// answers during detection, just without an image attached.
+export async function estimateItemDetails(name) {
+  const prompt = `Someone just added "${name}" to their fridge/pantry inventory
+by typing the name in, with no photo. Based on what this food typically is:
+- category ("fridge" or "pantry")
+- likely_shelf_life_days (a single whole number estimate of how many days this
+  item typically stays good once it's home. Always a plain integer, e.g. 5,
+  never a range like "5-7" and never a string. If it's shelf-stable (rice,
+  canned goods, spices, etc.), use a large number like 180.)
+
+Respond ONLY with valid JSON, no markdown fences, no preamble, in this exact shape:
+{ "category": "pantry", "likely_shelf_life_days": 5 }`;
+
+  const body = { contents: [{ parts: [{ text: prompt }] }] };
+
+  const res = await fetchWithTimeout(
+    `${BASE_URL}?key=${API_KEY}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+    15000
+  );
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Gemini shelf-life estimate failed: ${res.status} ${errText}`);
+  }
+
+  const data = await res.json();
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) {
+    throw new Error("Gemini returned no estimate (possibly blocked by safety filters).");
+  }
+  const cleaned = text.replace(/```json|```/g, "").trim();
+  const parsed = JSON.parse(cleaned);
+  return {
+    category: parsed.category === "fridge" ? "fridge" : "pantry",
+    likely_shelf_life_days: normalizeShelfLifeDays(parsed.likely_shelf_life_days),
+  };
 }
 
 // Step 2: ingredient list (+ leftovers habit, allergies) -> recipes

@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import {
   detectIngredients,
   suggestRecipes,
+  estimateItemDetails,
   cropFromBox,
   isEffectivelyEmpty,
 } from "./geminiApi";
@@ -13,14 +14,53 @@ const STAGE = {
   DETECTING: "detecting",
   EMPTY: "empty",
   DETECTED: "detected",
+  SHORTFALL: "shortfall",
   GENERATING: "generating",
   RESULTS: "results",
   ERROR: "error",
 };
 
-const SOON_THRESHOLD_DAYS = 5;
+const STEPS = ["Preferences", "Photos", "Inventory", "Recipes"];
 
-const LOADING_EMOJIS = ["🍇", "🥕", "🧀", "🍎", "🍲","🥘","🍔","🍕","🍤","🍝","🥞", "🍞"];
+function getStepIndex(stage) {
+  switch (stage) {
+    case STAGE.ONBOARDING:
+      return 0;
+    case STAGE.UPLOAD:
+    case STAGE.DETECTING:
+    case STAGE.EMPTY:
+      return 1;
+    case STAGE.DETECTED:
+    case STAGE.SHORTFALL:
+    case STAGE.GENERATING:
+      return 2;
+    case STAGE.RESULTS:
+      return 3;
+    default:
+      return 0;
+  }
+}
+
+// Non-food items that should never count toward "you've got enough".
+const NON_FOOD_ITEMS = ["water", "ice"];
+
+// Below this many usable items, don't even bother calling the recipe API —
+// there just isn't enough to build a real meal around.
+const MIN_ITEMS_FOR_RECIPES = 3;
+
+// Shelf-life tiers for the perishable badge.
+const URGENT_THRESHOLD_DAYS = 2;
+const SOON_THRESHOLD_DAYS = 7;
+
+const STAPLES = [
+  "Rice, pasta, or bread",
+  "Cooking oil",
+  "Onion & garlic",
+  "Eggs",
+  "Salt, pepper & a stock cube",
+];
+
+const LOADING_EMOJIS = ["🍇", "🥕", "🧀", "🍎", "🍲", "🥘", "🍔", "🍕", "🍤", "🍝", "🥞", "🍞"];
 
 function App() {
   const [stage, setStage] = useState(STAGE.ONBOARDING);
@@ -54,8 +94,18 @@ function App() {
 
   function handleFileChange(e) {
     const selected = Array.from(e.target.files).slice(0, 3);
+    // Release any previews from a prior selection before replacing them.
+    previews.forEach((src) => URL.revokeObjectURL(src));
     setFiles(selected);
     setPreviews(selected.map((f) => URL.createObjectURL(f)));
+  }
+
+  function removeFile(index) {
+    setPreviews((prev) => {
+      URL.revokeObjectURL(prev[index]);
+      return prev.filter((_, i) => i !== index);
+    });
+    setFiles((prev) => prev.filter((_, i) => i !== index));
   }
 
   async function computeCrops(detectedItems, previewSrcs) {
@@ -102,7 +152,6 @@ function App() {
         return;
       }
       setItems(detected);
-      console.log("Detected items:", detected);
       await computeCrops(detected, previews);
       setStage(STAGE.DETECTED);
     } catch (err) {
@@ -113,6 +162,10 @@ function App() {
   }
 
   async function handleGetRecipes() {
+    if (cookableItemsWithIndex.length < MIN_ITEMS_FOR_RECIPES) {
+      setStage(STAGE.SHORTFALL);
+      return;
+    }
     setError("");
     setStage(STAGE.GENERATING);
     try {
@@ -136,27 +189,54 @@ function App() {
   }
 
   function updateItemQuantity(index, newQty) {
-  setItems((prev) =>
-    prev.map((item, i) => (i === index ? { ...item, quantity: newQty } : item))
-  );
-  setEditingQtyIndex(null);
-}
+    setItems((prev) =>
+      prev.map((item, i) => (i === index ? { ...item, quantity: newQty } : item))
+    );
+    setEditingQtyIndex(null);
+  }
 
   function addManualItem() {
     const trimmed = newItemName.trim();
     if (!trimmed) return;
+    setNewItemName("");
+
+    // Show the item immediately so typing feels responsive, flagged as
+    // "estimating" until Gemini tells us how perishable it actually is.
+    const tempId = `manual-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     setItems((prev) => [
       ...prev,
       {
         name: trimmed,
         quantity: "1",
-        likely_shelf_life_days: 7,
+        likely_shelf_life_days: null,
         confidence: "high",
         edited: true,
         manual: true,
+        estimating: true,
+        _tempId: tempId,
       },
     ]);
-    setNewItemName("");
+
+    estimateItemDetails(trimmed)
+      .then((details) => {
+        setItems((prev) =>
+          prev.map((it) =>
+            it._tempId === tempId ? { ...it, ...details, estimating: false } : it
+          )
+        );
+      })
+      .catch((err) => {
+        console.warn("Couldn't estimate shelf life for", trimmed, err);
+        // Fall back to a shelf-stable assumption rather than leaving the
+        // item stuck in a permanent "estimating" state.
+        setItems((prev) =>
+          prev.map((it) =>
+            it._tempId === tempId
+              ? { ...it, likely_shelf_life_days: 14, estimating: false }
+              : it
+          )
+        );
+      });
   }
 
   function reset() {
@@ -177,15 +257,54 @@ function App() {
     setStage(STAGE.ONBOARDING);
   }
 
-  const cookableItems = items.filter(
-    (i) => !["water", "ice"].includes(i.name?.toLowerCase())
+  // Keep each item's original index alongside it, so thumbnails (keyed on
+  // the original detection order) never drift once water/ice are filtered out.
+  const cookableItemsWithIndex = items
+    .map((item, originalIndex) => ({ item, originalIndex }))
+    .filter(({ item }) => !NON_FOOD_ITEMS.includes(item.name?.toLowerCase()));
+
+  const soonToExpire = cookableItemsWithIndex.filter(
+    ({ item }) =>
+      item.likely_shelf_life_days != null &&
+      item.likely_shelf_life_days <= SOON_THRESHOLD_DAYS
   );
-  const soonToExpire = cookableItems.filter(
-    (i) => i.likely_shelf_life_days <= SOON_THRESHOLD_DAYS
+
+  const currentStep = getStepIndex(stage);
+
+  const recipesNeedShopping =
+    stage === STAGE.RESULTS &&
+    (recipes.length === 0 ||
+      recipes.every((r) => (r.missing?.length || 0) > (r.uses_existing?.length || 0)));
+
+  const consolidatedMissing = Array.from(
+    new Set(recipes.flatMap((r) => r.missing || []))
   );
 
   return (
     <div className="app">
+      <header className="app-header">
+        <div className="brand">
+          <span className="brand-mark">🥫</span>
+          Use What You've Got
+        </div>
+      </header>
+
+      <div className="stepper">
+        {STEPS.map((label, i) => (
+          <div
+            key={label}
+            className={
+              "step" +
+              (i === currentStep ? " step-current" : "") +
+              (i < currentStep ? " step-done" : "")
+            }
+          >
+            <span className="step-dot">{i < currentStep ? "✓" : i + 1}</span>
+            <span className="step-label">{label}</span>
+          </div>
+        ))}
+      </div>
+
       {stage === STAGE.ONBOARDING && (
         <section className="card">
           <h1>One quick thing</h1>
@@ -218,7 +337,6 @@ function App() {
             value={allergies}
             onChange={(e) => setAllergies(e.target.value)}
           />
-
           <p className="hint">Leave blank if none.</p>
 
           <p className="field-label">How many people are you cooking for?</p>
@@ -236,7 +354,6 @@ function App() {
               setServings(!val || val < 1 ? 1 : val);
             }}
           />
-         
 
           <button
             disabled={eatsLeftovers === null}
@@ -276,7 +393,17 @@ function App() {
           {previews.length > 0 && (
             <div className="preview-row">
               {previews.map((src, i) => (
-                <img key={i} src={src} alt="preview" className="preview-img" />
+                <div key={src} className="preview-item">
+                  <img src={src} alt="preview" className="preview-img" />
+                  <button
+                    type="button"
+                    className="preview-remove"
+                    onClick={() => removeFile(i)}
+                    aria-label="Remove this photo"
+                  >
+                    ×
+                  </button>
+                </div>
               ))}
             </div>
           )}
@@ -288,8 +415,7 @@ function App() {
       )}
 
       {stage === STAGE.DETECTING && (
-        
-        <section className="card DETECTING-CARD">
+        <section className="card detecting-card">
           <div className="fridge-loading">
             <span className="cycling-emoji">{LOADING_EMOJIS[emojiIndex]}</span>
           </div>
@@ -313,8 +439,8 @@ function App() {
       )}
 
       {(stage === STAGE.DETECTED ||
-        stage === STAGE.GENERATING ||
-        stage === STAGE.RESULTS) && (
+        stage === STAGE.SHORTFALL ||
+        stage === STAGE.GENERATING) && (
         <section className="card">
           <button className="ghost-btn back-btn" onClick={restartFully}>
             ← Back to home
@@ -323,45 +449,75 @@ function App() {
           <h2>Here's what's on hand</h2>
 
           <ul className="item-list">
-            {cookableItems.map((item, i) => {
-              const isSoon = item.likely_shelf_life_days <= SOON_THRESHOLD_DAYS;
+            {cookableItemsWithIndex.map(({ item, originalIndex }) => {
+              const hasEstimate = item.likely_shelf_life_days != null;
+              const isUrgent = hasEstimate && item.likely_shelf_life_days <= URGENT_THRESHOLD_DAYS;
+              const isSoon = hasEstimate && item.likely_shelf_life_days <= SOON_THRESHOLD_DAYS;
               return (
-                <li key={i} className={isSoon ? "urgent" : ""}>
-                  {crops[i] ? (
-                    <img src={crops[i]} alt={item.name} className="item-thumb" onClick={() => setExpandedCrop(crops[i])} />
+                <li key={originalIndex} className={isSoon ? "urgent" : ""}>
+                  {crops[originalIndex] ? (
+                    <img
+                      src={crops[originalIndex]}
+                      alt={item.name}
+                      className="item-thumb"
+                      onClick={() => setExpandedCrop(crops[originalIndex])}
+                    />
                   ) : (
                     <span className="item-thumb-placeholder"></span>
                   )}
 
                   <div className="name-col">
-                    {editingIndex === i ? (
-                      <input className="edit-input" defaultValue={item.name} autoFocus
-                        onBlur={(e) => updateItemName(i, e.target.value)}
-                        onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }} />
+                    {editingIndex === originalIndex ? (
+                      <input
+                        className="edit-input"
+                        defaultValue={item.name}
+                        autoFocus
+                        onBlur={(e) => updateItemName(originalIndex, e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") e.target.blur();
+                        }}
+                      />
                     ) : (
-                      <span onClick={() => setEditingIndex(i)}
-                        className={item.confidence === "low" && !item.edited ? "unsure" : "editable"}>
-                        {item.name}{item.confidence === "low" && !item.edited && " *"}
+                      <span
+                        onClick={() => setEditingIndex(originalIndex)}
+                        className={
+                          item.confidence === "low" && !item.edited
+                            ? "unsure"
+                            : "editable"
+                        }
+                      >
+                        {item.name}
+                        {item.confidence === "low" && !item.edited && " *"}
                       </span>
                     )}
                   </div>
 
-                  {isSoon ? (
-                    <span className="badge"><i className="ti ti-clock" aria-hidden="true"></i> use soon</span>
+                  {item.estimating ? (
+                    <span className="badge badge-checking">checking…</span>
+                  ) : isSoon ? (
+                    <span className={isUrgent ? "badge badge-urgent" : "badge"}>
+                      <i className="ti ti-clock" aria-hidden="true"></i>
+                      {isUrgent ? "Use today" : "Use soon"}
+                    </span>
                   ) : (
                     <span></span>
                   )}
 
-                  {editingQtyIndex === i ? (
+                  {editingQtyIndex === originalIndex ? (
                     <input
                       className="edit-input qty-input"
                       defaultValue={item.quantity}
                       autoFocus
-                      onBlur={(e) => updateItemQuantity(i, e.target.value)}
-                      onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
+                      onBlur={(e) => updateItemQuantity(originalIndex, e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") e.target.blur();
+                      }}
                     />
                   ) : (
-                    <span className="qty editable" onClick={() => setEditingQtyIndex(i)}>
+                    <span
+                      className="qty editable"
+                      onClick={() => setEditingQtyIndex(originalIndex)}
+                    >
                       {item.quantity}
                     </span>
                   )}
@@ -400,14 +556,41 @@ function App() {
 
           {soonToExpire.length > 0 && (
             <p className="expiry-note">
-              {soonToExpire.map((i) => i.name).join(", ")} won't keep for
-              long. Worth using in the next few days.
+              {soonToExpire.map(({ item }) => item.name).join(", ")} won't
+              keep for long. Worth using in the next few days.
             </p>
           )}
 
           {stage === STAGE.DETECTED && (
-            <button onClick={handleGetRecipes}>Prove I've got enough</button>
+            <button onClick={handleGetRecipes}>Generate recipes</button>
           )}
+
+          {stage === STAGE.SHORTFALL && (
+            <>
+              <div className="shortfall-banner">
+                We found {cookableItemsWithIndex.length} item
+                {cookableItemsWithIndex.length === 1 ? "" : "s"} to work
+                with — that's usually too little to build a real recipe
+                around. A few pantry staples would go a long way.
+              </div>
+              <p className="field-label">Basics worth having on hand:</p>
+              <ul className="staples-list">
+                {STAPLES.map((s) => (
+                  <li key={s}>{s}</li>
+                ))}
+              </ul>
+              <div className="button-row">
+                <button
+                  className="ghost-btn"
+                  onClick={() => setStage(STAGE.DETECTED)}
+                >
+                  Add more items
+                </button>
+                <button onClick={reset}>Upload another photo</button>
+              </div>
+            </>
+          )}
+
           {stage === STAGE.GENERATING && (
             <div className="loading-row">
               <span className="spinner"></span>
@@ -419,13 +602,32 @@ function App() {
 
       {stage === STAGE.RESULTS && (
         <section className="card">
-          <h2>Real meals, right now. No shop needed.</h2>
-
-          <div className="proof-banner">
-            {recipes.length} real meal{recipes.length === 1 ? "" : "s"} here.
-            {eatsLeftovers &&
-              " Since you eat leftovers, that could stretch across several more days."}
-          </div>
+          {recipesNeedShopping ? (
+            <>
+              <h2>Almost there — a quick shop first</h2>
+              <div className="shortfall-banner">
+                What's on hand isn't quite enough on its own.
+                {consolidatedMissing.length > 0 && (
+                  <>
+                    {" "}
+                    Pick up {consolidatedMissing.slice(0, 6).join(", ")}
+                    {consolidatedMissing.length > 6 ? ", and a few more" : ""},
+                    and these become real meals.
+                  </>
+                )}
+              </div>
+            </>
+          ) : (
+            <>
+              <h2>Real meals, right now. No shop needed.</h2>
+              <div className="proof-banner">
+                {recipes.length} real meal{recipes.length === 1 ? "" : "s"}{" "}
+                here.
+                {eatsLeftovers &&
+                  " Since you eat leftovers, that could stretch across several more days."}
+              </div>
+            </>
+          )}
 
           <div className="recipe-grid">
             {recipes.map((r, i) => (
