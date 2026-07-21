@@ -27,9 +27,7 @@ and time.
    says so honestly instead of forcing a false "you've got enough"
 6. **Gemini (text)** suggests recipes using what you already have, respecting
    your stated allergies, and lists only the ingredients you're actually
-   missing with a rough cost estimate
-7. If you eat leftovers, the results mention how many extra days the meals
-   could stretch
+   missing with a rough cost estimate.
 
 ## Tech stack
 
@@ -76,3 +74,7 @@ and time.
 - Barcode scanning for faster input
 - Real-time supermarket price comparison for missing items
 - Expiry-based push reminders
+- Learn from usage over time — after enough visits, analyze which
+  ingredients someone actually uses most and how much they typically
+  consume, then adjust shelf-life estimates and recipe recommendations
+  to match their real habits instead of generic averages
