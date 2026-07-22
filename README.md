@@ -32,7 +32,7 @@ and time.
 ## Tech stack
 
 - React + Vite
-- Google Gemini API (`gemini-2.0-flash`) — vision for ingredient detection
+- Google Gemini API (`gemini-3.1-flash-lite`) — vision for ingredient detection
   and bounding boxes, text generation for recipe suggestions
 - Canvas API for cropping item thumbnails from the uploaded photo
 - Plain CSS, no UI framework
